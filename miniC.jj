@@ -1,0 +1,618 @@
+options {
+    STATIC = false ;   //generate non-static methods
+    COMMON_TOKEN_ACTION = false; //set to true to debug token manager
+    //TOKEN_MANAGER_USES_PARSER = true; //pass parser reference to token manager
+}
+
+//================================================================================================================
+PARSER_BEGIN(miniC)
+import java.util.*;
+import java.io.*;
+
+public class miniC {
+
+    private static Stack<emitInst> expStack = new Stack<emitInst>(); 
+    private static Stack<Object> symbolStack = new Stack<Object>(); //Symbol stack  used in emitInstruction
+    private static Stack<ScopeLevel> currentScope = new Stack<ScopeLevel>(); 
+    private static Hashtable<String, ArrayList<QuadGen>> functions = new Hashtable<String, ArrayList<QuadGen>>(); //used to keep track of functions created 
+    private static ArrayList<QuadGen> quadList; //List des quadruplet
+    private static int Quad; //Track num of Quads
+    //private MinicSymTab st; //Symbol Table
+
+//---------------------------------------------------------------------------------------------
+    //  récupere l'@ courrante 
+    public static int getCurrentAddr() {
+        return Scope.getCurrentAddr();
+    }
+//--------------------------plusieurs fonctions------------------------------------------------
+    private static void defineFunction(String funcName) throws ParseException {
+        // Vérifier si la fonction crée n'était pas précédement définie
+        if(functions.containsKey(funcName))
+        {
+            throw new ParseException("Function already defined '" + funcName);
+        }
+
+
+        quadList = new ArrayList<QuadGen>(); //generated quad output
+        Quad = 0; 
+        functions.put(funcName,quadList);
+    }
+//--------------------------------------------------------------------------
+    private static void callFunction(String funcName) throws ParseException {
+        // Vérifier si la fonction appelée est définie
+        if(!functions.containsKey(funcName))
+        {
+            throw new ParseException("Unkown function '" + funcName);
+        }
+    }
+//----------------------------create var temp at  currentAddr +2 ----------------------------------------
+    private static int createTemp() {
+        int temp = currentScope.peek().getCurrentAddr();
+        currentScope.peek().setCurrentAddr(temp + 2);
+        return temp;
+    }
+//--------------------------------------------------------------------
+    private static String getAddr(Object s, String first) {
+        String output = getAddr(s);
+        if (output.startsWith("ADR+")) {
+            return first + output;
+        }
+        return output;
+    }
+//--------------------------------------------------------------------------
+    private static String getAddr(Object s) {
+
+        //if object is integer return its value as ADR + offset
+        if (s instanceof Integer) {
+            s = (Integer) s;
+
+            return ("ADR+" + s.toString());
+        }
+        //else return Adr as string
+        return ((String) s).substring(1);
+    }
+//------------------------------------------------------------------------
+    // converts number instance to int
+    public static int toInt(Object obj)
+    { 
+        if(obj instanceof Number) {
+             return ((Number) obj).intValue();
+        }
+        String s = obj.toString();
+        char[] mysChars = s.toCharArray();
+        if(mysChars[0]=='#') {mysChars[0]='0';}
+        s = String.valueOf(mysChars);
+        return Integer.parseInt(s);
+    }
+//-----------------------------------------------------------------------
+    //parsing the comparesion statement
+    private static void compare(String input) {
+        int jump_3 = (Integer) symbolStack.pop();
+        int jump_4 = (Integer) symbolStack.pop();
+        int jump_10 = (Integer) symbolStack.pop();
+        int jump_11;
+
+        switch (input) {
+            case "==":
+                jump_11 = (Integer) symbolStack.pop();
+                quadList.set(jump_11, new QuadGen("mov", "BX", getAddr(symbolStack.pop())));
+                quadList.set(jump_10, new QuadGen("mov", "AX", getAddr(symbolStack.pop())));
+                quadList.set(jump_4, new QuadGen("cmp", "AX", "BX"));
+                quadList.set(jump_3, new QuadGen("jne", "ETQ" + (Quad), null));
+                break;
+            case "!=":
+                jump_11 = (Integer) symbolStack.pop();
+                quadList.set(jump_11, new QuadGen("mov", "BX", getAddr(symbolStack.pop())));
+                quadList.set(jump_10, new QuadGen("mov", "AX", getAddr(symbolStack.pop())));
+                quadList.set(jump_4, new QuadGen("cmp", "AX", "BX"));
+                quadList.set(jump_3, new QuadGen("je", "ETQ"  + (Quad), null));
+                break;
+            case "<":
+                jump_11 = (Integer) symbolStack.pop();
+                quadList.set(jump_11, new QuadGen("mov", "BX", getAddr(symbolStack.pop())));
+                quadList.set(jump_10, new QuadGen("mov", "AX", getAddr(symbolStack.pop())));
+                quadList.set(jump_4, new QuadGen("cmp", "AX", "BX"));
+                quadList.set(jump_3, new QuadGen("jge", "ETQ"  + (Quad), null));
+                break;
+            case ">":
+                jump_11 = (Integer) symbolStack.pop();
+                quadList.set(jump_11, new QuadGen("mov", "BX", getAddr(symbolStack.pop())));
+                quadList.set(jump_10, new QuadGen("mov", "AX", getAddr(symbolStack.pop())));
+                quadList.set(jump_4, new QuadGen("cmp", "AX", "BX"));
+                quadList.set(jump_3, new QuadGen("jle", "ETQ"  + (Quad), null));
+                break;
+            case ">=":
+                jump_11 = (Integer) symbolStack.pop();
+                quadList.set(jump_11, new QuadGen("mov", "BX", getAddr(symbolStack.pop())));
+                quadList.set(jump_10, new QuadGen("mov", "AX", getAddr(symbolStack.pop())));
+                quadList.set(jump_4, new QuadGen("cmp", "AX", "BX"));
+                quadList.set(jump_3, new QuadGen("jl", "ETQ"  + (Quad), null));
+                break;
+            case "<=":
+                jump_11 = (Integer) symbolStack.pop();
+                quadList.set(jump_11, new QuadGen("mov", "BX", getAddr(symbolStack.pop())));
+                quadList.set(jump_10, new QuadGen("mov", "AX", getAddr(symbolStack.pop())));
+                quadList.set(jump_4, new QuadGen("cmp", "AX", "BX"));
+                quadList.set(jump_3, new QuadGen("jg", "ETQ"  + (Quad), null));
+                break;
+        }
+
+    }
+//------------------------------------------------------------------------------------------------
+    private static void emitInstruction(String action, String op, String type, String args ) throws ParseException{
+        // Semantic Actions 
+        switch (action) {
+
+            case "func_def": 
+                defineFunction(op);
+                break;
+            case "Function":
+                callFunction(op);
+                quadList.add(new QuadGen("CALL", op ,null ));
+                Quad++;
+                break;
+            case "func_begin":
+                currentScope.push(new ScopeLevel());
+                break;
+            case "func_end":
+                currentScope.pop();
+                break;
+            case "VarBegin":
+                currentScope.peek().addScope();
+                break;
+            case "VarEnd":
+                currentScope.peek().deleteScope();
+                break;
+            case "End":
+                symbolStack.push("#" + op);
+                break;
+            case "VarInit":
+                int a = currentScope.peek().addVariable(op);
+                symbolStack.push(a);
+                break;
+            case "#pid":
+                int p = currentScope.peek().findVariable(op);
+                symbolStack.push(p);
+                break;
+            case "+":
+                int t = createTemp();
+                quadList.add(new QuadGen("mov", "CX", getAddr(symbolStack.pop())));
+                Quad++;
+                quadList.add(new QuadGen("add", "CX", getAddr(symbolStack.pop())));
+                Quad++;
+                quadList.add(new QuadGen("mov", getAddr(t), "CX"));
+                Quad++;
+
+                symbolStack.push(t);
+                break;
+            case "-":
+                int t1 = createTemp();
+                String str2 = getAddr(symbolStack.pop());
+                quadList.add(new QuadGen("mov", "CX", getAddr(symbolStack.pop())));
+                Quad++;
+                quadList.add(new QuadGen("-", "CX", str2));
+                Quad++;
+                quadList.add(new QuadGen("mov", getAddr(t1), "CX"));
+                Quad++;
+                symbolStack.push(t1);
+                break;
+            case "*":
+                int t2 = createTemp();
+                quadList.add(new QuadGen("mov", "CX", getAddr(symbolStack.pop())));
+                Quad++;
+                quadList.add(new QuadGen("mov", "AL", getAddr(symbolStack.pop(), "BYTE PTR ")));
+                Quad++;
+                quadList.add(new QuadGen("*", "CL", null));
+                Quad++;
+                quadList.add(new QuadGen("mov", getAddr(t2), "AX"));
+                Quad++;
+                symbolStack.push(t2);
+                break;
+            case "/":
+                int t3 = createTemp();
+                String pa2 = getAddr(symbolStack.pop(), "BYTE PTR ");
+                quadList.add(new QuadGen("mov", "AX", getAddr(symbolStack.pop())));
+                Quad++;
+                quadList.add(new QuadGen("mov", "CL", pa2));
+                Quad++;
+                quadList.add(new QuadGen("/", "CL", null));
+                Quad++;
+                quadList.add(new QuadGen("mov", getAddr(t3, "BYTE PTR "), "AL"));
+                Quad++;
+                symbolStack.push(t3);
+                break;
+            case "assign":
+                quadList.add(new QuadGen("mov", "AX", getAddr(symbolStack.pop())));
+                Quad++;
+                quadList.add(new QuadGen("mov", getAddr(symbolStack.pop()), "AX"));
+                Quad++;
+                break;
+            case "ETIQ":
+                quadList.add(new QuadGen("ETQ" + Quad + ":", null, null));
+                symbolStack.push(Quad);
+                Quad++;
+                break;
+            case "record_quad":
+                quadList.add(new QuadGen("save", null, null));
+                symbolStack.push(Quad);
+                Quad++;
+                break;
+            case "record_quad_pointer":
+                quadList.add(new QuadGen("ETQ" + Quad + ":", null, null));
+                symbolStack.push(Quad);
+                Quad++;
+                break;
+            case "while":
+                compare(op);
+
+                quadList.add(new QuadGen("jmp", "ETQ"  + symbolStack.pop(), null));
+                quadList.add(new QuadGen("ETQ"  + Quad + ":", null, null));
+                Quad++;
+                Quad++;
+                break;
+            case "jump_sv":
+                compare(op);
+
+                quadList.add(new QuadGen("save", null, null));
+                symbolStack.push(Quad);
+
+                quadList.add(new QuadGen("ETQ" + Quad + ":", null, null));
+                Quad++;
+                Quad++;
+                break;
+            case "jump":
+                quadList.set(toInt(symbolStack.pop()), new QuadGen("jmp", "ETQ"  + Quad, null));
+                break;
+            case "jmpf":
+                compare(op);
+
+                quadList.add(new QuadGen("ETQ" + Quad + ":", null, null));
+                Quad++;
+                break;
+            case "jump_stmt":
+                quadList.add(new QuadGen("jmp", null, null));
+                symbolStack.push(Quad);
+                Quad++;
+                break;
+            case "for_stmt":
+                quadList.add(new QuadGen("ETQ"  + Quad + ":", null, null));
+                symbolStack.push(Quad);
+                Quad++;
+                break;
+            case "for":
+                int jp_statement = toInt(symbolStack.pop());
+                int jp_condition = toInt(symbolStack.pop());
+                int step_pointer = toInt(symbolStack.pop());
+                int jp_after_condition = toInt(symbolStack.pop());
+
+                if(!op.equals("void"))
+                {
+                    compare(op);
+                }
+
+                int befor_condition = toInt(symbolStack.pop());
+
+                quadList.set(jp_condition, new QuadGen("jmp", "ETQ" + befor_condition, null));
+                quadList.set(jp_after_condition, new QuadGen("jmp", "ETQ" + jp_statement, null));
+
+                quadList.add(new QuadGen("jmp", "ETQ" + step_pointer, null));
+                quadList.add(new QuadGen("ETQ" + Quad + ":", null, null));
+                Quad++;
+                Quad++;
+                break;
+            case "end_code":
+                quadList.add(new QuadGen("ETQ" + Quad + ": ", null, null));
+                Quad++;
+                int k = 0;
+                System.out.println("------------------ Le Code intermediaire sous forme de quadruplets -----------------");
+                StringBuilder sb = new StringBuilder();
+                for (QuadGen c : quadList)
+                {
+                    sb.append(k+" :\t");
+                    sb.append(c.toString());
+                    sb.append("\n");
+                    k++;
+                }
+                System.out.println(sb);
+                System.out.println("------------------------------------------------------------------------------------");
+                break;
+        }
+
+    }
+//-----------------------------------------------------------------------------------
+    static void preStack(emitInst p) throws ParseException
+    {
+          String operation = p.operation;
+          switch(operation)
+          {
+            	case "+":
+      	  		case "-":
+      	  		case "/":
+      	  		case "*":
+      	  			while(!expStack.isEmpty() && precedence(expStack.peek().operation) >= precedence(operation))
+      	  			{
+      	  			  	emitInst pa = expStack.pop();
+      	  			  	emitInstruction(pa.operation,pa.source, "", "");
+      	  			}
+      	  			expStack.push(p);
+      	  			break;
+      	  		case "#OP":
+      	  			expStack.push(p);
+      	  			break;
+      	  		case "#CP":
+      	  			while(!expStack.peek().operation.equals("#OP") )
+      	  			{
+      	  			  	emitInst pa = expStack.pop();
+      	  			  	emitInstruction(pa.operation,pa.source, "", "");
+      	  			}
+      	  			expStack.pop();
+      	  		case "#finish":
+      	  			while(!expStack.isEmpty())
+      	  			{
+      	  			  	emitInst pa = expStack.pop();
+      	  			  	emitInstruction(pa.operation,pa.source, "", "");
+      	  			}
+      	  		case "#pid":
+      	  		case "End":
+      	  			emitInstruction(p.operation,p.source, "", "");
+      	  			break;
+          }
+    }
+//-------------------------------------------------------------------------------------
+// operations order treatement
+    static int precedence(String opt)
+    {
+        switch(opt)
+        {
+            case "+":
+            case "-":
+                return 1;
+            case "/":
+            case "*":
+                return 2;
+            default:
+                return 0;
+        }
+    }
+//--------------------------------------------------------------------------------------
+    static class emitInst
+    {
+        //op src emitInst from code with only one operand ()
+        public static String operation , source;
+        public emitInst(String operation,String source)
+        {
+            this.operation = operation;
+            this.source = source;
+        }
+
+    }
+
+//========================================================================================================
+
+
+
+
+    public static void main(String args []) throws ParseException, IOException
+    {
+
+    miniC parser = new miniC(System.in);
+    System.out.println("MiniC Compiler written by \n     - BOUROUINA ANFAL\n     - MAKHLOUFI KENZA\n");
+
+    while (true)
+    {
+      try
+      {
+        System.out.println("Ecrits votre Code en langage Mini-C ...\n");
+        parser.Start();
+      }
+      catch (Exception e)
+      {
+        System.out.println("Erreur de syntax!!! veuillez reessayer");
+        System.out.println(e.getMessage());
+        parser.ReInit(System.in);
+      }
+      catch (Error e)
+      {
+        System.out.println("Erreur!.");
+        System.out.println(e.getMessage());
+        break;
+      }
+    }
+  }
+}
+PARSER_END(miniC)
+
+
+
+/**
+ * Lexical Analyzer
+ */
+
+//SKIPPED CHAR
+SKIP : {
+ " "
+|  "\t"
+|  "\n"
+|  "\r"
+|  <"//" (~["\n","\r"])* ("\n" | "\r" | "\r\n")>
+|  <"/*" (~["*"])* "*" ("*" | ~["*","/"] (~["*"])* "*")* "/">
+}
+
+//KEYWORDS
+TOKEN : {
+      <IF: "if" >
+    | <ELSE: "else" >
+    | <INT: "int" >
+    | <FLOAT: "float" >
+    | <WHILE: "while" >
+    | <FOR: "for" >
+}
+
+//OPERATORS
+TOKEN: {
+    <IDE: (["A"-"Z"] | ["a"-"z"] )+ (["A"-"Z"] | ["a"-"z"] | ["0"-"9"])* >                  |
+    <NUMBER: (["0"-"9"] | ["1"-"9"] (["0"-"9"])*) >
+}
+
+//OPERATIONS
+TOKEN: {
+      <DIFF: "!=" >
+    | <PLUS: "+" >
+    | <SUB: "-" >
+    | <MUL: "*" >
+    | <DIV: "/" >
+    | <PARG: "(" >
+    | <PARD: ")" >
+    | <FAS: "," >
+    | <BRAG: "{" >
+    | <BRAD: "}" >
+    | <VER: ";" >
+    | <ASSIGN: "=" >
+    | <EQUALEQUAL: "==" >
+    | <INF: "<"  >
+    | <INFEQUAL: "<=" >
+    | <SUP: ">"  >
+    | <SUPEQUAL: ">=" >
+
+}
+
+void Start() : {}
+{
+    (Function())*
+    < EOF >
+}
+
+void ArgList() : {}
+{
+    Arg() (<FAS> Arg())*
+}
+
+void Arg() : {}
+{
+    Type() <IDE>
+}
+
+
+void Function() :
+{
+ Token tk;
+}
+{
+    { emitInstruction( "func_begin" , "", "", ""); }
+    Type() tk = <IDE> <PARG> [ArgList()] <PARD> { emitInstruction( "func_def", tk.image, "", "" ); }
+
+       CompoundStmt()
+
+    { emitInstruction( "end_code" , "", "", ""); }
+    { emitInstruction( "func_end" , "", "", ""); }
+}
+
+void IsentList():{
+Token tk;
+}
+{
+ ((tk = <IDE> { emitInstruction( "VarInit" , tk.image, "", "" ); }))
+      (<ASSIGN> EXPRS() {preStack(new emitInst( "#finish" , "" ));}{ emitInstruction( "assign" , "", "", "" ); })?
+}
+
+
+void Declaration() :
+{
+  Token tk;
+}
+{
+      ((Type() tk = <IDE> { emitInstruction( "VarInit" , tk.image, "", "" ); }))
+     (<ASSIGN> EXPRS() {preStack(new emitInst( "#finish" , "" ));}{ emitInstruction( "assign" , "", "", "" ); })? (<FAS> IsentList() )*
+}
+
+void Type():
+{}
+{
+    <INT> | <FLOAT>
+}
+
+void CompoundStmt() : {}
+{
+    <BRAG> { emitInstruction( "VarBegin" , "", "", ""); } (Stmt())*  { emitInstruction( "VarEnd" , "", "", ""); }  <BRAD>
+}
+
+void Stmt() : {}
+{
+      Declaration() <VER>
+    | Expr() <VER>
+    | WhileStmt()
+    | IfStmt()
+    | ForStmt()
+    
+}
+
+void IfStmt() :
+{
+  Token op;
+}
+{
+    <IF> <PARG> EXPRS() op = Rvalue() <PARD> CompoundStmt()
+
+    (
+      ( ( <ELSE> { emitInstruction( "jump_sv" , op.image, "", "" ); }) ( (CompoundStmt() | Stmt()) { emitInstruction( "jump" , "", "", "" ); })  )
+      | { emitInstruction( "jmpf" , op.image, "", "" ); }
+    )
+
+}
+
+void Expr() : {}
+{
+    EXPRS() (ExprAf())?
+}
+
+void EXPRS() :
+{}
+{
+	(
+	  (
+	  ({ Token tk1;} tk1 = <IDE> { preStack(new emitInst( "#pid" , tk1.image )); }| { Token tk3;} tk3 = < NUMBER>  { preStack(new emitInst( "End" , tk3.image )); } )
+		({String op;}
+			(
+			  "+" { preStack(new emitInst( "+" , "" ));}
+			| "-" { preStack(new emitInst( "-" , "" ));}
+			| "*" { preStack(new emitInst( "*" , "" ));}
+			| "/" { preStack(new emitInst( "/" , "" ));}
+		)EXPRS())?
+	) | ( "(" {preStack(new emitInst( "#OP" , "" ));} EXPRS() ")" {preStack(new emitInst( "#CP" , "" ));} ))
+}
+
+void ExprAf():{}{
+  <ASSIGN> EXPRS() {preStack(new emitInst( "#finish" , "" ));}{ emitInstruction( "assign" , "", "", "" ); } | Rvalue()
+}
+
+Token Rvalue() :
+{
+ Token op = null;
+}
+{
+  	{preStack(new emitInst( "#finish" , "" ));} ( op = "<" | op = ">" | op = "==" | op = "!=" | op = " >=" | op = "<="  ) EXPRS() {preStack(new emitInst( "#finish" , "" ));} { emitInstruction( "record_quad" , "", "", "" );emitInstruction( "record_quad" , "", "", "" );emitInstruction( "record_quad" , "", "", "" );emitInstruction( "record_quad" , "", "", "" ); }
+	{return op;}
+
+}
+
+
+void WhileStmt() :
+{
+ Token op;
+}
+{
+    <WHILE> <PARG> { emitInstruction( "record_quad_pointer" , "", "", "" ); } EXPRS() op = Rvalue() <PARD> (CompoundStmt() | Stmt()) { emitInstruction( "while" , op.image, "", "" ); }
+}
+
+void ForStmt() :
+{
+ Token op = null;
+}
+{
+	<FOR> <PARG> (Declaration() | EXPRS())? ";" { emitInstruction( "record_quad_pointer" , "", "", "" ); } ( EXPRS() op = Rvalue())?  { emitInstruction( "record_quad" , "", "", "" ); }  <VER> { emitInstruction( "record_quad_pointer" , "", "", "" ); } (( { Token tk;} tk = <IDE> { emitInstruction( "#pid" , tk.image, "", "" ); } <ASSIGN> EXPRS(){preStack(new emitInst( "#finish" , "" ));} { emitInstruction( "assign" , "", "", "" ); }))? { emitInstruction( "record_quad" , "", "", "" ); }
+	<PARD>
+		{ emitInstruction( "for_stmt" , "", "", "" ); }
+	      (CompoundStmt())
+	    { if(op != null)emitInstruction( "for" , op.image, "", "" );else emitInstruction( "for" , "void", "", "" );}
+}
+
